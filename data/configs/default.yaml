@@ -1,0 +1,8 @@
+---
+eval_file: data/prompts.jsonl
+prompt_file: data/prompts/generation_closebook.json
+temperature: 1.0
+top_p: 0.95
+dataset_name: veriscore
+tag: default
+model: meta-llama/Llama-3.1-8B-Instruct

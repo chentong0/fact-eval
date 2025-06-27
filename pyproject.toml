@@ -1,0 +1,17 @@
+[project]
+name = "fact-eval"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.6.0",  # Pinned for vLLM
+    "transformers>=4.51.3",  # Pinned for vLLM
+    "vllm==0.8.2",
+
+    "spacy",
+    "faiss-cpu",
+]
+
+[tool.setuptools]
+packages = ["fact_eval"]
