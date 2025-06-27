@@ -41,7 +41,7 @@ Unsupported: If a claim is not supported by the search results, mark it as unsup
 
     def get_prompt_gpt(self, snippet):
         return f"""
-You need to judge whether a claim is supported or not by search results from Google. Output either "supported" or "unsupported" based on the search results without any explanation.
+You need to judge whether a claim is supported or not by search results from Google. When doing the task, take into consideration whether the link of the search result is of a trustworthy source. Mark your answer with ### signs.
 
 Below are the definitions of the two categories:
 
@@ -63,11 +63,18 @@ Unsupported: If a claim is not supported by the search results, mark it as unsup
             print(os.getenv("AZURE_OPENAI_ENDPOINT", ""))
             print(os.getenv("AZURE_OPENAI_API_KEY", ""))
         else:
+            # get the available gpu memory, and the model should take 20gb
+            total_memory = torch.cuda.get_device_properties(0).total_memory
+            available_memory = total_memory - torch.cuda.memory_allocated()
+            # Calculate memory utilization based on available memory vs desired 20GB
+            desired_memory = 20 * 1024 * 1024 * 1024  # 20GB in bytes
+            gpu_memory_utilization = min(1.0, desired_memory / total_memory)
+
             self.llm = LLM(
                 model=self.model_name, 
                 dtype=torch.bfloat16,
                 tensor_parallel_size=1,
-                gpu_memory_utilization=0.8,
+                gpu_memory_utilization=gpu_memory_utilization,
                 max_model_len=4096,
             )
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
@@ -135,7 +142,7 @@ Unsupported: If a claim is not supported by the search results, mark it as unsup
                             model=self.model_name,
                             messages=[
                                 # {"role": "system", "content": self.instruction},
-                                {"role": "user", "content": self.get_prompt(prompt)}
+                                {"role": "user", "content": self.get_prompt_gpt(prompt)}
                             ],
                             max_tokens=16,
                             temperature=0
@@ -177,8 +184,8 @@ Unsupported: If a claim is not supported by the search results, mark it as unsup
 
 if __name__ == "__main__":
     # Example usage of ClaimVerifier
-    model_name = "../../models/llama3_based_claim_verifier"  # Replace with your model name or path
-    # model_name = "gpt-4.1-mini-standard"
+    # model_name = "../../models/llama3_based_claim_verifier"  # Replace with your model name or path
+    model_name = "gpt-4.1-mini-standard"
 
     claim_snippets_dict = {
         "The Eiffel Tower is located in Paris.": [

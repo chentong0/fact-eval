@@ -3,41 +3,65 @@ from vllm import LLM
 from transformers import AutoTokenizer
 import torch
 import gc
+from tqdm import tqdm
 
 
 class ClaimExtractor():
     def __init__(self, model_name, lazy_loading=True):
-        # self.model = None
+        self.llm = None
+        self.client = None
         self.model_name = model_name
         self.lazy_loading = lazy_loading
-        # self.alpaca_prompt = open("./prompt/extraction_alpaca_template.txt", "r").read()
-        self.spacy_nlp = spacy.load('en_core_web_sm')
+
+        try:
+            self.spacy_nlp = spacy.load('en_core_web_sm')
+        except Exception as e:
+            # install spacy model
+            from spacy.cli import download
+            download("en_core_web_sm")
+            self.spacy_nlp = spacy.load('en_core_web_sm')
 
         if not self.lazy_loading:
             self.load_model()
 
     def load_model(self):
-        # get the available gpu memory, and the model should take 20gb
-        total_memory = torch.cuda.get_device_properties(0).total_memory
-        available_memory = total_memory - torch.cuda.memory_allocated()
-        # Calculate memory utilization based on available memory vs desired 20GB
-        desired_memory = 20 * 1024 * 1024 * 1024  # 20GB in bytes
-        gpu_memory_utilization = min(1.0, desired_memory / total_memory)
+        if "gpt" in self.model_name:
+            import os
+            from openai import AzureOpenAI
+            self.client = AzureOpenAI(
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
+                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
+                api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
+            )
+            print(os.getenv("AZURE_OPENAI_API_VERSION", ""))
+            print(os.getenv("AZURE_OPENAI_ENDPOINT", ""))
+            print(os.getenv("AZURE_OPENAI_API_KEY", ""))
+        else:
+            # get the available gpu memory, and the model should take 20gb
+            total_memory = torch.cuda.get_device_properties(0).total_memory
+            available_memory = total_memory - torch.cuda.memory_allocated()
+            # Calculate memory utilization based on available memory vs desired 20GB
+            desired_memory = 20 * 1024 * 1024 * 1024  # 20GB in bytes
+            gpu_memory_utilization = min(1.0, desired_memory / total_memory)
 
-        self.llm = LLM(
-            model=self.model_name, 
-            dtype=torch.bfloat16,
-            tensor_parallel_size=1,
-            gpu_memory_utilization=gpu_memory_utilization,
-            max_model_len=4096,
-        )
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.llm = LLM(
+                model=self.model_name, 
+                dtype=torch.bfloat16,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=gpu_memory_utilization,
+                max_model_len=4096,
+            )
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
     def unload_model(self):
-        del self.llm
-        del self.tokenizer
-        torch.cuda.empty_cache()
-        gc.collect()
+        if self.llm:
+            del self.llm
+            del self.tokenizer
+            torch.cuda.empty_cache()
+            gc.collect()
+        elif self.client:
+            del self.client
+            gc.collect()
 
     def get_prompt(self, snippet):
         return f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -54,6 +78,20 @@ If there is no verifiable fact in the sentence, please write "No verifiable clai
 
 ### Response:""".strip()
 
+    def get_prompt_gpt(self, snippet, sentence):
+        return f"""
+You are trying to verify how factual a piece of text is. To do so, you need to break down a sentence and extract as many fine-grained facts mentioned in the sentence as possible. Each of these fine-grained facts should be verifiable against reliable external world knowledge (e.g., via Wikipedia). Any story, personal experiences, hypotheticals (e.g., "would be" or subjunctive), subjective statements (e.g., opinions), suggestions, advice, instructions, and other such content should not be included in the list. Biographical, historical, scientific, and other such texts are not personal experiences or stories. You should extract verifiable facts from them. Each fact should also be describing either one single event (e.g., "Nvidia is founded in 1993 in Sunnyvale, California, U.S.") or single state (e.g., "UMass Amherst has existed for 161 years.") with necessary time and location information. Quotations should be extracted verbatim with the source when available. Listed references should be ignored.
+
+Extract fine-grained facts from the sentence marked between <SOS> and <EOS>. You should focus on the named entities and numbers in the sentence and extract relevant information from the sentence. Other sentences are only context for you to recover pronouns, definite phrases (e.g., "the victims" or "the pope"), and so on. Each fact should be understandable on its own and require no additional context. This means that all entities must be referred to by name but not pronoun. Use the name of entities rather than definite noun phrases (e.g., 'the teacher') whenever possible. If a definite noun phrase is used, be sure to add modifiers (e.g., a embedded clause, a prepositional phrase, etc.). Each fact must be situated within relevant temporal and location whenever needed. Keep each fact to one sentence with zero or at most one embedded clause. You do not need to justify what you extract.
+
+If there is no verifiable fact in the sentence, please write "No verifiable claim."
+
+Extract *verifiable atomic* facts. Write one fact per line. Do not include any numbering or bullet points.
+
+Text: {snippet}
+Sentence to be focused on: {sentence}
+Facts:""".strip()
+
     def batch_scanner_extractor(self, inputs):
         """
         Process multiple inputs (questions and/or responses) in a batch and return extracted claims.
@@ -68,7 +106,7 @@ If there is no verifiable fact in the sentence, please write "No verifiable clai
         Returns:
             list of dict: Each dict contains the extracted claims for the corresponding input.
         """
-        snippets = []
+        snippet_list = []
         for input_data in inputs:
             question = input_data["question"].strip()
             response = input_data["output"].strip()
@@ -90,10 +128,10 @@ If there is no verifiable fact in the sentence, please write "No verifiable clai
 
                 snippet = f"Question: {question.strip()}\nResponse: {snippet}".strip()
 
-                snippets.append(snippet)
+                snippet_list.append({"snippet": snippet, "sentence": sentence})
 
-        # Use batch_fact_extractor to process all snippets
-        batch_results = self.batch_fact_extractor(snippets)
+        # Use batch_fact_extractor to process all snippet_list
+        batch_results = self.batch_fact_extractor(snippet_list)
 
         # Group results back into the original input structure
         grouped_results = []
@@ -116,12 +154,12 @@ If there is no verifiable fact in the sentence, please write "No verifiable clai
         return [x.text.strip() for x in self.spacy_nlp(text).sents]
 
 
-    def batch_fact_extractor(self, snippets):
+    def batch_fact_extractor(self, snippet_list):
         """
         Process multiple snippets in a batch and return a list of dictionaries with extracted claims.
 
         Args:
-            snippets (list of str): List of text snippets to process.
+            snippet_list (list of dict): List of text snippets to process.
 
         Returns:
             list of dict: Each dict contains the extracted claims for a snippet.
@@ -130,34 +168,76 @@ If there is no verifiable fact in the sentence, please write "No verifiable clai
         if self.lazy_loading:
             self.load_model()
 
-        from vllm import SamplingParams
-        prompts = []
-        results = []
+        if self.llm:
+            from vllm import SamplingParams
+            prompts = []
+            results = []
 
-        for snippet in snippets:
-            # formatted_input = self.alpaca_prompt.format(snippet, "")
-            formatted_input = self.get_prompt(snippet)
-            # prompt = self.get_prompt(snippet)
-            formatted_input = self.tokenizer.apply_chat_template([{"role": "user", "content": formatted_input}], tokenize=False, add_generation_prompt=True)
-            if self.tokenizer.bos_token and formatted_input.startswith(self.tokenizer.bos_token):
-                formatted_input = formatted_input.removeprefix(self.tokenizer.bos_token)
-            
-            prompts.append(formatted_input)
+            for snippet in snippet_list:
+                # formatted_input = self.alpaca_prompt.format(snippet, "")
+                formatted_input = self.get_prompt(snippet["snippet"])
+                # prompt = self.get_prompt(snippet)
+                formatted_input = self.tokenizer.apply_chat_template([{"role": "user", "content": formatted_input}], tokenize=False, add_generation_prompt=True)
+                if self.tokenizer.bos_token and formatted_input.startswith(self.tokenizer.bos_token):
+                    formatted_input = formatted_input.removeprefix(self.tokenizer.bos_token)
+                
+                prompts.append(formatted_input)
 
-        outputs = self.llm.generate(
-            prompts, sampling_params=SamplingParams(max_tokens=512, temperature=0, stop="\n\n")
-        )
+            outputs = self.llm.generate(
+                prompts, sampling_params=SamplingParams(max_tokens=512, temperature=0, stop="\n\n")
+            )
 
-        for i, output in enumerate(outputs):
-            clean_output = output.outputs[0].text
-            if not clean_output or "No verifiable claim." in clean_output:
-                results.append({"claims": []})
-            else:
-                claims = [x.strip() for x in clean_output.split("\n") if len(x.split()) > 1]    # at least two words
-                results.append({"claims": claims})
+            for i, output in enumerate(outputs):
+                clean_output = output.outputs[0].text
+                if not clean_output or "No verifiable claim." in clean_output:
+                    results.append({"claims": []})
+                else:
+                    claims = [x.strip() for x in clean_output.split("\n") if len(x.split()) > 1]    # at least two words
+                    results.append({"claims": claims})
 
-            # print(f"---\nSnippet: {prompts[i]}\n---")
-            # print(f"---\nResponse: {clean_output}\n---")
+                # print(f"---\nSnippet: {prompts[i]}\n---")
+                # print(f"---\nResponse: {clean_output}\n---")
+        else:
+            results = []
+            outputs = []
+            completion_tokens = 0
+            prompt_tokens = 0
+            MAX_TRIES = 3
+            progress_bar = tqdm(total=len(snippet_list), desc="Processing Prompts", unit="prompt")
+            for snippet in snippet_list:
+                for tries in range(MAX_TRIES):
+                    try:
+                        response = self.client.chat.completions.create(
+                            model=self.model_name,
+                            messages=[
+                                {"role": "user", "content": self.get_prompt_gpt(snippet["snippet"], snippet["sentence"])}
+                            ],
+                            max_tokens=512,
+                            temperature=0
+                        )
+                        outputs.append(response)
+                        completion_tokens += response.usage.completion_tokens
+                        prompt_tokens += response.usage.prompt_tokens
+                        progress_bar.update(1)
+                        progress_bar.set_postfix({
+                            "Completion Tokens": completion_tokens,
+                            "Prompt Tokens": prompt_tokens,
+                        })
+                        break
+                    except Exception as e:
+                        print(f"Error: {e}. Retrying {tries + 1}/{MAX_TRIES}...")
+                else:
+                    print(f"Failed to generate response for prompt: {snippet['sentence']} after {MAX_TRIES} tries.")
+                    outputs.append(None)
+
+            for i, output in enumerate(outputs):
+                response = output.choices[0].message.content
+                clean_output = response.strip()
+                if not clean_output or "No verifiable claim." in clean_output:
+                    results.append({"claims": []})
+                else:
+                    claims = [x.strip() for x in clean_output.split("\n") if len(x.split()) > 1]    # at least two words
+                    results.append({"claims": claims})
 
         if self.lazy_loading:
             self.unload_model()
@@ -167,7 +247,9 @@ If there is no verifiable fact in the sentence, please write "No verifiable clai
 
 if __name__ == "__main__":
     # Example usage of ClaimExtractor
-    model_name = "./model/mistral_based_claim_extractor"  # Replace with your model name or path
+    # model_name = "./model/mistral_based_claim_extractor"  # Replace with your model name or path
+    model_name = "gpt-4.1-mini-standard"
+    
     claim_extractor = ClaimExtractor(model_name=model_name)
 
     # Test input

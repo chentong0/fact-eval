@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "torch>=2.6.0",  # Pinned for vLLM
     "transformers>=4.51.3",  # Pinned for vLLM
-    "vllm==0.8.2",
+    "vllm==0.8.5",
 
     "spacy",
     "faiss-cpu",
