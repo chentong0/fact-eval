@@ -70,13 +70,12 @@ def main():
     args = {**config, **{k: v for k, v in vars(parser_args).items() if v is not None}}
     args = argparse.Namespace(**args)
 
-
-
     # Data loading
     if "data_name" in args and args.data_name:
         import datasets
-        data_raw = datasets.load_dataset(args.data_name, split=args.data_split)
+        data_raw = datasets.load_dataset(args.data_name, split=args.data_split, streaming=True)
         data = [dict(item) for item in data_raw]
+        print(f"Loaded {len(data)} samples from {args.data_name} {args.data_split}")
     elif "data_path" in args and args.data_path:
         # Accept comma-separated paths or a single path
         if "," in args.data_path:
@@ -84,6 +83,7 @@ def main():
         else:
             paths = [args.data_path]
         data = load_data_from_files(paths)
+        print(f"Loaded {len(data)} samples from {args.data_path}")
     else:
         raise ValueError("Either --data_name or --data_path must be provided.")
     if args.max_samples:

@@ -16,36 +16,12 @@
 # 		--use_cache
 
 test:
-	# uv run python -m fact_eval.run_eval \
-	# 	--config configs/factscore-mini.biography.yaml \
-	# 	--model_name allenai/OLMo-2-1124-13B-Instruct \
-	# 	--model_tag olmo2-13b-instruct \
-	# 	--max_samples 100 \
-	# 	--output_dir results/factscore-mini.biography-n100.olmo2-13b-instruct  \
-	# 	--use_cache
-
 	uv run python -m fact_eval.run_eval \
-		--config configs/factscore-mini.biography.yaml \
-		--model_name allenai/OLMo-2-1124-7B-Instruct \
-		--model_tag olmo2-7b-instruct \
-		--max_samples 100 \
-		--output_dir results/factscore-mini.biography-n100.olmo2-7b-instruct  \
-		--use_cache
-
-	uv run python -m fact_eval.run_eval \
-		--config configs/factscore-mini.biography.yaml \
+		--config configs/factscore-mini.wildhallu.yaml \
 		--model_name allenai/OLMo-2-0425-1B-Instruct \
 		--model_tag olmo2-1b-instruct \
-		--max_samples 100 \
-		--output_dir results/factscore-mini.biography-n100.olmo2-1b-instruct  \
-		--use_cache
-	
-	uv run python -m fact_eval.run_eval \
-		--config configs/factscore-mini.biography.yaml \
-		--model_name Qwen/Qwen2.5-7B-Instruct \
-		--model_tag qwen25-7b-instruct \
-		--max_samples 100 \
-		--output_dir results/factscore-mini.biography-n100.qwen25-7b-instruct  \
+		--max_samples 5 \
+		--output_dir results/factscore-mini.wildhallu-n5.olmo2-1b-instruct  \
 		--use_cache
 
 

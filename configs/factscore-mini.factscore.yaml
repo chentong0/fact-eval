@@ -1,5 +1,6 @@
 scorer: factscore
-data_path: /weka/oe-adapt-default/tongc/post-train-factuality/scripts/data/data.factscore.jsonl
+data_name: tongc-allenai/fact-eval-data
+data_split: factscore
 model_name_extraction: openai::gpt-4.1-mini
 model_name_verification: openai::gpt-4.1-mini
 search_model_name: bm25-only
