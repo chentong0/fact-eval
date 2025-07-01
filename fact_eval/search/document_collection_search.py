@@ -22,14 +22,27 @@ class SearchEngineDocumentCollection:
     def get_document_chunks(documents, chunk_size=100):
         document_chunks = []
         for doc in documents:
-            word_list = doc.split()
+            # Handle both string documents and dict documents with title/text
+            if isinstance(doc, dict):
+                # Extract text from document dict
+                text = doc.get('text', '')
+                title = doc.get('title', '')
+                # Combine title and text for chunking
+                full_text = f"{title} {text}".strip()
+            else:
+                # Fallback for string documents
+                full_text = str(doc)
+            
+            word_list = full_text.split()
             chunks = [" ".join(word_list[i:i + chunk_size]) for i in range(0, len(word_list), chunk_size)]
             document_chunks.extend(chunks)
         return tuple(document_chunks)
 
     def get_bm25_passages(self, documents, query, k):
-        from rank_bm25 import BM25Okapi
-        doc_cache_key = hash(tuple(documents))
+        if len(documents) == 0:
+            return []
+        from fact_eval.utils.rank_bm25 import BM25Okapi
+        doc_cache_key = hash(tuple((doc.get('title', ''), doc.get('text', '')) if isinstance(doc, dict) else doc for doc in documents))
         if doc_cache_key in self.embed_cache:
             document_chunks, bm25 = self.embed_cache[doc_cache_key]
         else:

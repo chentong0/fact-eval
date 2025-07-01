@@ -1,5 +1,6 @@
 import os
-from openai import AzureOpenAI
+from fact_eval.utils.async_completion import batch_chat_complete
+from fact_eval.prompts.prompt_customized_verifier import get_customized_verifier_prompt
 
 class ClaimVerifier:
     def __init__(self, *args, **kwargs):
@@ -11,39 +12,25 @@ class ClaimVerifier:
 class OpenaiClaimVerifier:
     def __init__(self, model_name):
         self.model_name = model_name
-        self.client = AzureOpenAI(
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
-            api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-        )
-        print(os.getenv("AZURE_OPENAI_API_VERSION", ""))
-        print(os.getenv("AZURE_OPENAI_ENDPOINT", ""))
-        print(os.getenv("AZURE_OPENAI_API_KEY", ""))
-        self.token_usage = 0
+        if self.model_name.startswith("azure::"):
+            from openai import AzureOpenAI
+            self.client = AzureOpenAI(
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
+                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
+                api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
+            )
+        elif self.model_name.startswith("openai::"):
+            from openai import OpenAI
+            self.client = OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY", ""),
+            )
+        # self.token_usage = 0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
 
-    def get_prompt(self, claim_text, passages_text):
-        prompt = f"""
-You need to judge whether a claim is supported or contradicted by Google search results, or whether there is no enough information to make the judgement. When doing the task, take into consideration whether the link of the search result is of a trustworthy source.
+    def get_prompt(self, claim, passages):
+        return get_customized_verifier_prompt(claim, passages)
 
-Below are the definitions of the three categories:
-
-Supported: A claim is supported by the search results if everything in the claim is supported and nothing is contradicted by the search results. There can be some search results that are not fully related to the claim.
-Contradicted: A claim is contradicted by the search results if something in the claim is contradicted by some search results. There should be no search result that supports the same part.
-Inconclusive: A claim is inconclusive based on the search results if:
-- a part of a claim cannot be verified by the search results,
-- a part of a claim is supported and contradicted by different pieces of evidence,
-- the entity/person mentioned in the claim has no clear referent (e.g., "the approach", "Emily", "a book").
-
->>> Begin of search results <<<
-{passages_text}
-<<< End of search results <<<
-
-Claim: {claim_text}
-Task: Given the search results above, is the claim supported, contradicted, or inconclusive? Your answer should be either "supported", "contradicted", or "inconclusive" without explanation and comments.
-
-Your decision:
-""".strip()
-        return prompt
 
     def verify(self, claim_list, passages_list):
         task_prompt_list = [
@@ -51,11 +38,10 @@ Your decision:
             for claim, passages in zip(claim_list, passages_list)
         ]
         messages_list = [[{"role": "user", "content": prompt}] for prompt in task_prompt_list]
-        from open_instruct.fact_utils.utils_vllm import batch_chat_complete
         outputs = batch_chat_complete(
             self.client,
             messages_list,
-            model=self.model_name,
+            model=self.model_name.split("::")[-1],
             max_tokens=10,
         )
         # return [result.choices[0].text for result in results]
@@ -64,7 +50,9 @@ Your decision:
         for output in outputs:
             try:
                 # Sum up token usage from all outputs
-                self.token_usage += output.usage.total_tokens
+                # self.token_usage += output.usage.total_tokens
+                self.prompt_tokens += output.usage.prompt_tokens
+                self.completion_tokens += output.usage.completion_tokens
                 correctness = output.choices[0].message.content == "supported"
                 results.append(correctness)
             except:

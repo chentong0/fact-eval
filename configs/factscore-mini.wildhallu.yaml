@@ -1,0 +1,9 @@
+scorer: factscore
+data_path: /weka/oe-adapt-default/tongc/post-train-factuality/scripts/data/data.wild_hallucinations.jsonl
+model_name_extraction: openai::gpt-4.1-mini
+model_name_verification: openai::gpt-4.1-mini
+search_model_name: bm25-only
+search_chunk_size: 100
+search_num_chunks: 10
+search_num_processes: 1
+length_penalty_threshold: 10

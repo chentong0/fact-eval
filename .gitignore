@@ -1,6 +1,9 @@
 uv.lock
 index/
 models/
+data/
+deprecated/
+results/
 
 
 # Byte-compiled / optimized / DLL files

@@ -6,6 +6,8 @@ from transformers import AutoTokenizer
 import torch
 import gc
 from tqdm import tqdm
+from fact_eval.prompts.prompt_veriscore_verifier import get_veriscore_verifier_message_ft, get_veriscore_verifier_prompt_gpt
+import os
 
 class ClaimVerifier():
     def __init__(self, model_name, lazy_loading=True):
@@ -15,53 +17,19 @@ class ClaimVerifier():
         self.model_name = model_name
         self.lazy_loading = lazy_loading
 
-    def apply_chat_template(self, messages):
-        system_message = messages[0]["content"]
-        user_message = messages[1]["content"]
-
-        return f"""<|begin_of_text|><|start_header_id|>system<|end_header_id|>
-
-{system_message}<|eot_id|><|start_header_id|>user<|end_header_id|>
-
-{user_message}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
-
-"""
-
-    def get_message(self, snippet):
-        instruction = """You need to judge whether a claim is supported or not by search results from Google. When doing the task, take into consideration whether the link of the search result is of a trustworthy source. Mark your answer with ### signs.
-
-Below are the definitions of the two categories:
-
-Supported: A claim is supported by the search results if one or more search results directly support the claim. There can be cases where some search results are not fully related to the claim but no search result should directly contradict the claim. All parts of a claim should be supported by the search results. If there is a part of a claim that is not directly supported, the claim should be marked as unsupported.
-Unsupported: If a claim is not supported by the search results, mark it as unsupported.""".strip()
-        return [
-            {"role": "system", "content": instruction},
-            {"role": "user", "content": snippet}
-        ]
-
-    def get_prompt_gpt(self, snippet):
-        return f"""
-You need to judge whether a claim is supported or not by search results from Google. When doing the task, take into consideration whether the link of the search result is of a trustworthy source. Mark your answer with ### signs.
-
-Below are the definitions of the two categories:
-
-Supported: A claim is supported by the search results if one or more search results directly support the claim. There can be cases where some search results are not fully related to the claim but no search result should directly contradict the claim. All parts of a claim should be supported by the search results. If there is a part of a claim that is not directly supported, the claim should be marked as unsupported.
-Unsupported: If a claim is not supported by the search results, mark it as unsupported.
-
-{snippet}""".strip()
-
     def load_model(self):
-        if "gpt" in self.model_name:
-            import openai
+        if self.model_name.startswith("azure::"):
             from openai import AzureOpenAI
             self.client = AzureOpenAI(
                 api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
                 azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
                 api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
             )
-            print(os.getenv("AZURE_OPENAI_API_VERSION", ""))
-            print(os.getenv("AZURE_OPENAI_ENDPOINT", ""))
-            print(os.getenv("AZURE_OPENAI_API_KEY", ""))
+        elif self.model_name.startswith("openai::"):
+            from openai import OpenAI
+            self.client = OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY", ""),
+            )
         else:
             # get the available gpu memory, and the model should take 20gb
             total_memory = torch.cuda.get_device_properties(0).total_memory
@@ -114,8 +82,9 @@ Unsupported: If a claim is not supported by the search results, mark it as unsup
             for i, usr_input in enumerate(prompts):
                 # prompt = self.alpaca_prompt.format(self.instruction, usr_input)
                 # prompt = self.get_prompt(usr_input)
-                message = self.get_message(usr_input)
-                prompt = self.apply_chat_template(message)
+                message = get_veriscore_verifier_message_ft(usr_input)
+                # prompt = self.apply_chat_template(message)
+                prompt = self.tokenizer.apply_chat_template(message, add_generation_prompt=True, tokenize=False)
 
                 if self.tokenizer.bos_token and prompt.startswith(self.tokenizer.bos_token):
                     prompt.removeprefix(self.tokenizer.bos_token)
@@ -142,7 +111,7 @@ Unsupported: If a claim is not supported by the search results, mark it as unsup
                             model=self.model_name,
                             messages=[
                                 # {"role": "system", "content": self.instruction},
-                                {"role": "user", "content": self.get_prompt_gpt(prompt)}
+                                {"role": "user", "content": get_veriscore_verifier_prompt_gpt(prompt)}
                             ],
                             max_tokens=16,
                             temperature=0
@@ -169,6 +138,7 @@ Unsupported: If a claim is not supported by the search results, mark it as unsup
                 if output is not None:
                     response = output.choices[0].message.content
                     clean_output = response.strip()
+                    print(clean_output)
                     results[claim] = clean_output == "supported"
                 else:
                     results[claim] = False
@@ -181,34 +151,3 @@ Unsupported: If a claim is not supported by the search results, mark it as unsup
             self.unload_model()
 
         return results
-
-if __name__ == "__main__":
-    # Example usage of ClaimVerifier
-    # model_name = "../../models/llama3_based_claim_verifier"  # Replace with your model name or path
-    model_name = "gpt-4.1-mini-standard"
-
-    claim_snippets_dict = {
-        "The Eiffel Tower is located in Paris.": [
-            {"title": "Eiffel Tower - Wikipedia", "snippet": "The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars in Paris, France.", "link": "https://en.wikipedia.org/wiki/Eiffel_Tower"},
-            {"title": "Eiffel Tower Facts", "snippet": "The Eiffel Tower is one of the most iconic landmarks in Paris, France.", "link": "https://www.toureiffel.paris/en"},
-        ],
-        "The Eiffel Tower is located in London.": [
-            {"title": "Eiffel Tower - Wikipedia", "snippet": "The Eiffel Tower is a wrought-iron lattice tower on the Champ de Mars in Paris, France.", "link": "https://en.wikipedia.org/wiki/Eiffel_Tower"},
-            {"title": "Eiffel Tower Facts", "snippet": "The Eiffel Tower is one of the most iconic landmarks in Paris, France.", "link": "https://www.toureiffel.paris/en"},
-        ],
-        "The sky is pink.": [
-            {"title": "Sky Color - Wikipedia", "snippet": "The sky appears blue due to Rayleigh scattering of sunlight.", "link": "https://en.wikipedia.org/wiki/Sky_color"},
-            {"title": "Why is the sky blue?", "snippet": "The blue color of the sky is due to the scattering of light by the atmosphere.", "link": "https://www.scientificamerican.com/article/why-is-the-sky-blue/"},
-        ],
-    }
-
-    # Initialize the ClaimVerifier
-    verifier = ClaimVerifier(model_name=model_name)
-
-    # Run the claim verification
-    results = verifier.batch_verifying_claim(claim_snippets_dict)
-
-    # Print the results
-    print("Verification Results:")
-    # for result in results:
-    print(json.dumps(results, indent=4))

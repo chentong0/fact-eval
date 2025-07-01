@@ -1,6 +1,19 @@
 import json
 import os
-from openai import AzureOpenAI
+from fact_eval.prompts.prompt_customized_extractor import get_customized_extractor_prompt
+from fact_eval.utils.async_completion import batch_chat_complete
+
+
+class Document:
+    """A simple document class with title and text attributes."""
+    
+    def __init__(self, title: str, text: str):
+        self.title = title
+        self.text = text
+    
+    def __repr__(self):
+        return f"Document(title='{self.title}', text='{self.text[:50]}...')"
+
 
 class ClaimExtractor:
     def __init__(self, *args, **kwargs):
@@ -14,68 +27,33 @@ class OpenaiClaimExtractor:
 
     def __init__(self, model_name):
         self.model_name = model_name
-        self.client = AzureOpenAI(
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
-            azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
-            api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-        )
-        print(os.getenv("AZURE_OPENAI_API_VERSION", ""))
-        print(os.getenv("AZURE_OPENAI_ENDPOINT", ""))
-        print(os.getenv("AZURE_OPENAI_API_KEY", ""))
-        self.token_usage = 0
+        if self.model_name.startswith("azure::"):
+            from openai import AzureOpenAI
+            self.client = AzureOpenAI(
+                api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
+                    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
+                    api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
+                )
+        elif self.model_name.startswith("openai::"):
+            from openai import OpenAI
+            self.client = OpenAI(
+                api_key=os.getenv("OPENAI_API_KEY", ""),
+            )
+        # self.token_usage = 0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
 
-    def get_prompt(self, prompt_text, response_text):
-        prompt = f"""
-You are verifying the factuality of a response. Extract as many fine-grained, atomic, and verifiable factual claims as possible from the response.
-A claim should state one simple, checkable fact about a real-world entity, property, function, or relationship. Each claim should be a single piece of information that could be looked up in a database, official documentation, reputable forum, or reliable source such as Wikipedia or scientific literature.
-
-**Guidelines for atomic claims:**
-- Only one fact per claim.
-- If a sentence contains multiple facts or relationships, split them into separate claims.
-- Avoid claims that join different facts using “and,” “or,” or by listing.
-- Each claim should clearly mention the relevant entity or concept and state only one property, relationship, or action.
-- If a claim could be split into multiple smaller, independent statements, do so.
-
-**Include as claims:**
-- Statements about the existence, property, function, or relationship of entities, organizations, concepts, or technologies.
-- Claims about names, definitions, features, purposes, or histories.
-- Statements about what something does, who runs it, what it is used for, or what it affects.
-- For hedged language (“may be,” “might be,” “could be”), extract the factual association, typical usage, or commonly reported function as long as the claim is traceable to community consensus, documentation, or reputable user reports.
-- No need for numbers, dates, or locations unless present.
-- Claims must stand alone, using names or clear descriptions, not pronouns.
-- If a quotation is present, extract it verbatim with the source if given.
-
-**Do not include as claims:**
-- Personal opinions, suggestions, advice, instructions, or experiences.
-- Pure speculation or possibilities that are not reported in any documentation or user discussions.
-- Claims from code blocks or pure math derivations.
-
-Extract claims only from the response section, not from the prompt or question. If the response does not contain any verifiable factual claims, output an empty list.
-
-Output a JSON list of strings. Each string should be a single atomic factual claim from the response, clearly stated and verifiable.
-
->>> Begin of prompt <<<
-{prompt_text}
-<<< End of prompt <<<
-
->>> Begin of response <<<
-{response_text}
-<<< End of response <<<
-
-Facts (as a JSON list of strings):
-""".strip()
-        return prompt
-
-
+    def get_prompt(self, prompt, response):
+        """Generate the extraction prompt for a given prompt-response pair."""
+        return get_customized_extractor_prompt(prompt, response)
 
     def extract(self, prompt_list, response_list):
         task_prompt_list = [self.get_prompt(prompt, response) for prompt, response in zip(prompt_list, response_list)]
         messages_list = [[{"role": "user", "content": prompt}] for prompt in task_prompt_list]
-        from open_instruct.fact_utils.utils_vllm import batch_chat_complete
         outputs = batch_chat_complete(
             self.client,
             messages_list,
-            model=self.model_name,
+            model=self.model_name.split("::")[-1],
             max_tokens=4096,
             temperature=0,
         )
@@ -85,7 +63,8 @@ Facts (as a JSON list of strings):
                 output_text = output.choices[0].message.content
                 claim_list = json.loads(output_text)
                 # Sum up token usage from all outputs
-                self.token_usage += output.usage.total_tokens
+                self.prompt_tokens += output.usage.prompt_tokens
+                self.completion_tokens += output.usage.completion_tokens
                 results.append(claim_list)
             except:
                 results.append([])
