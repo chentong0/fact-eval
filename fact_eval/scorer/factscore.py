@@ -65,13 +65,13 @@ class FactScorer:
         
         self.claim_verifier = OpenaiClaimVerifier(model_name=config.model_name_verification)
 
-    def _extract_claims(self, data: List[Dict[str, Any]], save_tag: str) -> Tuple[List[Dict[str, Any]], List[List[str]]]:
+    def _extract_claims(self, data: List[Dict[str, Any]], model_alias: str) -> Tuple[List[Dict[str, Any]], List[List[str]]]:
         """
         Extract claims from model responses.
         
         Args:
             data: List of data items containing model responses
-            save_tag: Tag for saving intermediate results
+            model_alias: Tag for saving intermediate results
             
         Returns:
             Tuple of (processed_data, extracted_claims) where extracted_claims is a list of lists
@@ -79,11 +79,11 @@ class FactScorer:
         extracted_claims = []
         
         # Check if cache exists
-        if self.cache_dir and os.path.exists(os.path.join(self.cache_dir, f"extractor_cache_{save_tag}.json")):
-            with open(os.path.join(self.cache_dir, f"extractor_cache_{save_tag}.json"), "r") as f:
+        if self.cache_dir and os.path.exists(os.path.join(self.cache_dir, f"extractor_cache_{model_alias}.json")):
+            with open(os.path.join(self.cache_dir, f"extractor_cache_{model_alias}.json"), "r") as f:
                 cached_data = json.load(f)
             claims_list = cached_data["claims_list"]
-            print(f"Loaded cached claims from {save_tag}")
+            print(f"Loaded cached claims from {model_alias}")
         else:
             # Extract claims from prompts and responses
             prompt_list = [item["prompt"] for item in data]
@@ -93,7 +93,7 @@ class FactScorer:
             
             # Cache the results
             if self.cache_dir is not None:
-                cache_file = os.path.join(self.cache_dir, f"extractor_cache_{save_tag}.json")
+                cache_file = os.path.join(self.cache_dir, f"extractor_cache_{model_alias}.json")
                 with open(cache_file, "w") as f:
                     json.dump({
                         "claims_list": claims_list,
@@ -112,23 +112,23 @@ class FactScorer:
         
         return data, extracted_claims
 
-    def _search_evidence(self, extracted_claims: List[List[str]], docs_list: List[List[Dict[str, str]]], save_tag: str) -> Dict[str, List[str]]:
+    def _search_evidence(self, extracted_claims: List[List[str]], docs_list: List[List[Dict[str, str]]], model_alias: str) -> Dict[str, List[str]]:
         """
         Search for evidence to support the extracted claims.
         
         Args:
             extracted_claims: List of lists of claims to search evidence for
             docs_list: List of document collections for each data item (each doc has title and text)
-            save_tag: Tag for saving intermediate results
+            model_alias: Tag for saving intermediate results
             
         Returns:
             Dictionary mapping claims to search results
         """
         # Check if cache exists
-        if self.cache_dir and os.path.exists(os.path.join(self.cache_dir, f"search_cache_{save_tag}.json")):
-            with open(os.path.join(self.cache_dir, f"search_cache_{save_tag}.json"), "r") as f:
+        if self.cache_dir and os.path.exists(os.path.join(self.cache_dir, f"search_cache_{model_alias}.json")):
+            with open(os.path.join(self.cache_dir, f"search_cache_{model_alias}.json"), "r") as f:
                 claim_to_chunks = json.load(f)
-            print(f"Loaded cached search results from {save_tag}")
+            print(f"Loaded cached search results from {model_alias}")
         else:
             # Flatten claims and create mapping from claims to documents
             all_claims = []
@@ -153,29 +153,29 @@ class FactScorer:
 
             # Cache the results
             if self.cache_dir is not None:
-                cache_file = os.path.join(self.cache_dir, f"search_cache_{save_tag}.json")
+                cache_file = os.path.join(self.cache_dir, f"search_cache_{model_alias}.json")
                 with open(cache_file, "w") as f:
                     json.dump(claim_to_chunks, f, indent=2)
                 print(f"Search completed! Saved to {cache_file}")
 
         return claim_to_chunks
 
-    def _verify_claims(self, claim_to_chunks: Dict[str, List[str]], save_tag: str) -> Dict[str, bool]:
+    def _verify_claims(self, claim_to_chunks: Dict[str, List[str]], model_alias: str) -> Dict[str, bool]:
         """
         Verify claims against the search results.
         
         Args:
             claim_to_chunks: Dictionary mapping claims to search results
-            save_tag: Tag for saving intermediate results
+            model_alias: Tag for saving intermediate results
             
         Returns:
             Dictionary mapping claims to verification results (True/False)
         """
         # Check if cache exists
-        if self.cache_dir and os.path.exists(os.path.join(self.cache_dir, f"verification_cache_{save_tag}.json")):
-            with open(os.path.join(self.cache_dir, f"verification_cache_{save_tag}.json"), "r") as f:
+        if self.cache_dir and os.path.exists(os.path.join(self.cache_dir, f"verification_cache_{model_alias}.json")):
+            with open(os.path.join(self.cache_dir, f"verification_cache_{model_alias}.json"), "r") as f:
                 claim_to_correctness = json.load(f)
-            print(f"Loaded cached verification results from {save_tag}")
+            print(f"Loaded cached verification results from {model_alias}")
         else:
             # Extract claims and passages for verification
             all_claims = list(claim_to_chunks.keys())
@@ -190,7 +190,7 @@ class FactScorer:
 
             # Cache the results
             if self.cache_dir is not None:
-                cache_file = os.path.join(self.cache_dir, f"verification_cache_{save_tag}.json")
+                cache_file = os.path.join(self.cache_dir, f"verification_cache_{model_alias}.json")
                 with open(cache_file, "w") as f:
                     json.dump(claim_to_correctness, f, indent=2)
                 print(f"Verification completed! Saved to {cache_file}")
@@ -292,13 +292,13 @@ class FactScorer:
         
     #     return metrics
 
-    def get_score(self, data: List[Dict[str, Any]], save_tag: str = 'default') -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    def get_score(self, data: List[Dict[str, Any]], model_alias: str = 'default') -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
         """
         Compute FactScore for the given data.
         
         Args:
             data: List of data items containing model responses
-            save_tag: Tag for saving intermediate and final results
+            model_alias: Tag for saving intermediate and final results
             
         Returns:
             Tuple of (aggregate_metrics, per_instance_results)
@@ -306,8 +306,8 @@ class FactScorer:
         if not data:
             raise ValueError("Data list cannot be empty")
             
-        if not save_tag:
-            raise ValueError("save_tag cannot be empty")
+        if not model_alias:
+            raise ValueError("model_alias cannot be empty")
 
         # Extract docs_list from data
         docs_list = [item.get("docs", []) for item in data]
@@ -319,13 +319,13 @@ class FactScorer:
             raise ValueError("response is required for all data items")
 
         # Step 1: Extract claims
-        data, extracted_claims = self._extract_claims(data, save_tag)
+        data, extracted_claims = self._extract_claims(data, model_alias)
 
         # Step 2: Search for evidence
-        claim_to_chunks = self._search_evidence(extracted_claims, docs_list, save_tag)
+        claim_to_chunks = self._search_evidence(extracted_claims, docs_list, model_alias)
 
         # Step 3: Verify claims
-        claim_to_correctness = self._verify_claims(claim_to_chunks, save_tag)
+        claim_to_correctness = self._verify_claims(claim_to_chunks, model_alias)
 
         # Step 4: Compute metrics
         aggregate_metrics, per_instance_results = self._compute_metrics(data, claim_to_correctness)
@@ -333,7 +333,7 @@ class FactScorer:
         # # Save final results
         # if self.output_dir is not None:
         #     output_dir = os.path.join(self.output_dir, 'results')
-        #     output_path = os.path.join(output_dir, f"factscore_results_{save_tag}.json")
+        #     output_path = os.path.join(output_dir, f"factscore_results_{model_alias}.json")
         #     os.makedirs(os.path.dirname(output_path), exist_ok=True)
         #     with open(output_path, "w") as f:
         #         json.dump(aggregate_metrics, f, indent=2)
@@ -447,7 +447,7 @@ class FactScorer:
 #     )
     
 #     scorer = FactScorer(config)
-#     aggregate_metrics, per_instance_results = scorer.get_factscore(data, save_tag="test")
+#     aggregate_metrics, per_instance_results = scorer.get_factscore(data, model_alias="test")
 #     print("Aggregate metrics:", aggregate_metrics)
 #     print("Per-instance results:", per_instance_results)
 

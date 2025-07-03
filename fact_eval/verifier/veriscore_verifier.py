@@ -8,6 +8,7 @@ import gc
 from tqdm import tqdm
 from fact_eval.prompts.prompt_veriscore_verifier import get_veriscore_verifier_message_ft, get_veriscore_verifier_prompt_gpt
 import os
+from fact_eval.utils.async_completion import batch_chat_complete
 
 class ClaimVerifier():
     def __init__(self, model_name, lazy_loading=True):
@@ -16,6 +17,8 @@ class ClaimVerifier():
         self.client = None
         self.model_name = model_name
         self.lazy_loading = lazy_loading
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
 
     def load_model(self):
         if self.model_name.startswith("azure::"):
@@ -99,51 +102,66 @@ class ClaimVerifier():
                 clean_output = response.strip()
                 results[claim] = clean_output == "supported"
         else:
-            outputs = []
-            completion_tokens = 0
-            prompt_tokens = 0
-            MAX_TRIES = 3
-            progress_bar = tqdm(total=len(prompts), desc="Processing Prompts", unit="prompt")
-            for prompt in prompts:
-                for tries in range(MAX_TRIES):
-                    try:
-                        response = self.client.chat.completions.create(
-                            model=self.model_name,
-                            messages=[
-                                # {"role": "system", "content": self.instruction},
-                                {"role": "user", "content": get_veriscore_verifier_prompt_gpt(prompt)}
-                            ],
-                            max_tokens=16,
-                            temperature=0
-                        )
-                        outputs.append(response)
-                        completion_tokens += response.usage.completion_tokens
-                        prompt_tokens += response.usage.prompt_tokens
-                        progress_bar.update(1)
-                        progress_bar.set_postfix({
-                            "Completion Tokens": completion_tokens,
-                            "Prompt Tokens": prompt_tokens,
-                        })
-                        break
-                    except Exception as e:
-                        print(f"Error: {e}. Retrying {tries + 1}/{MAX_TRIES}...")
-                else:
-                    print(f"Failed to generate response for prompt: {prompt} after {MAX_TRIES} tries.")
-                    outputs.append(None)
+            # outputs = []
+            # completion_tokens = 0
+            # prompt_tokens = 0
+            # MAX_TRIES = 3
+            # progress_bar = tqdm(total=len(prompts), desc="Processing Prompts", unit="prompt")
+            # for prompt in prompts:
+            #     for tries in range(MAX_TRIES):
+            #         try:
+            #             response = self.client.chat.completions.create(
+            #                 model=self.model_name,
+            #                 messages=[
+            #                     # {"role": "system", "content": self.instruction},
+            #                     {"role": "user", "content": get_veriscore_verifier_prompt_gpt(prompt)}
+            #                 ],
+            #                 max_tokens=16,
+            #                 temperature=0
+            #             )
+            #             outputs.append(response)
+            #             completion_tokens += response.usage.completion_tokens
+            #             prompt_tokens += response.usage.prompt_tokens
+            #             progress_bar.update(1)
+            #             progress_bar.set_postfix({
+            #                 "Completion Tokens": completion_tokens,
+            #                 "Prompt Tokens": prompt_tokens,
+            #             })
+            #             break
+            #         except Exception as e:
+            #             print(f"Error: {e}. Retrying {tries + 1}/{MAX_TRIES}...")
+            #     else:
+            #         print(f"Failed to generate response for prompt: {prompt} after {MAX_TRIES} tries.")
+            #         outputs.append(None)
 
-                # print("-" * 20, prompt, "-" * 20)
-                # print("-" * 20, response.choices[0].message.content, "-" * 20)
-                # print(response)
+            #     # print("-" * 20, prompt, "-" * 20)
+            #     # print("-" * 20, response.choices[0].message.content, "-" * 20)
+            #     # print(response)
+            # for i, (claim, output) in enumerate(zip(claim_snippets_dict.keys(), outputs)):
+            #     if output is not None:
+            #         response = output.choices[0].message.content
+            #         clean_output = response.strip()
+            #         print(clean_output)
+            #         results[claim] = clean_output == "supported"
+            #     else:
+            #         results[claim] = False
+            messages_list = [[{"role": "user", "content": get_veriscore_verifier_prompt_gpt(prompt)}] for prompt in prompts]
+            outputs = batch_chat_complete(
+                self.client,
+                messages_list,
+                model=self.model_name.split("::")[-1],
+                max_tokens=16,
+                temperature=0
+            )
             for i, (claim, output) in enumerate(zip(claim_snippets_dict.keys(), outputs)):
-                if output is not None:
-                    response = output.choices[0].message.content
-                    clean_output = response.strip()
-                    print(clean_output)
+                try:
+                    clean_output = output.choices[0].message.content.strip()
                     results[claim] = clean_output == "supported"
-                else:
+                    self.prompt_tokens += output.usage.prompt_tokens
+                    self.completion_tokens += output.usage.completion_tokens
+                except Exception as e:
+                    print(f"Error: {e}")
                     results[claim] = False
-                
-
 
         # json.dump({claim: {"prompt": output.prompt, "response": output.outputs[0].text} for claim, output in zip(claim_snippets_dict.keys(), outputs)}, open("debug.json", "w"), indent=4)
         

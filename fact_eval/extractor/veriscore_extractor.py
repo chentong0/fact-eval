@@ -6,6 +6,8 @@ import gc
 from tqdm import tqdm
 from fact_eval.prompts.prompt_veriscore_extractor import get_veriscore_extractor_prompt_ft, get_veriscore_extractor_prompt_gpt
 
+from fact_eval.utils.async_completion import batch_chat_complete
+
 import os
 
 
@@ -15,6 +17,8 @@ class ClaimExtractor():
         self.client = None
         self.model_name = model_name
         self.lazy_loading = lazy_loading
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
 
         try:
             self.spacy_nlp = spacy.load('en_core_web_sm')
@@ -73,8 +77,8 @@ class ClaimExtractor():
 
         Args:
             inputs (list of dict): Each dict contains either:
-                - {"output": <output>} for non-QA inputs
-                - {"question": <question>, "output": <output>} for QA inputs
+                - {"prompt": <prompt>, "response": <response>} for non-QA inputs
+                - {"prompt": <prompt>, "response": <response>} for QA inputs
             is_qa (bool): Whether the inputs are QA-based or not.
             cost_estimate_only (bool): If True, only estimate the cost without extracting claims.
 
@@ -83,8 +87,8 @@ class ClaimExtractor():
         """
         snippet_list = []
         for input_data in inputs:
-            question = input_data["question"].strip()
-            response = input_data["output"].strip()
+            question = input_data["prompt"].strip()
+            response = input_data["response"].strip()
             sentences = self.get_sentence(response)
             for i, sentence in enumerate(sentences):
                 # if sentence contains less than five words, skip it
@@ -112,7 +116,7 @@ class ClaimExtractor():
         grouped_results = []
         snippet_idx = 0
         for input_data in inputs:
-            response = input_data["output"].strip()
+            response = input_data["response"].strip()
 
             sentences = self.get_sentence(response)
             claims_per_input = []
@@ -173,52 +177,75 @@ class ClaimExtractor():
                 # print(f"---\nSnippet: {prompts[i]}\n---")
                 # print(f"---\nResponse: {clean_output}\n---")
         else:
-            results = []
-            outputs = []
-            completion_tokens = 0
-            prompt_tokens = 0
-            MAX_TRIES = 3
-            progress_bar = tqdm(total=len(snippet_list), desc="Processing Prompts", unit="prompt")
-            for snippet in snippet_list:
-                for tries in range(MAX_TRIES):
-                    try:
-                        if self.client is None:
-                            raise Exception("Client not initialized")
-                        response = self.client.chat.completions.create(
-                            model=self.model_name.split("::")[-1],
-                            messages=[
-                                {"role": "user", "content": get_veriscore_extractor_prompt_gpt(snippet["snippet"], snippet["sentence"])}
-                            ],
-                            max_tokens=512,
-                            temperature=0
-                        )
-                        outputs.append(response)
-                        if response.usage is not None:
-                            completion_tokens += response.usage.completion_tokens
-                            prompt_tokens += response.usage.prompt_tokens
-                        progress_bar.update(1)
-                        progress_bar.set_postfix({
-                            "Completion Tokens": completion_tokens,
-                            "Prompt Tokens": prompt_tokens,
-                        })
-                        break
-                    except Exception as e:
-                        print(f"Error: {e}. Retrying {tries + 1}/{MAX_TRIES}...")
-                else:
-                    print(f"Failed to generate response for prompt: {snippet['sentence']} after {MAX_TRIES} tries.")
-                    outputs.append(None)
+            # results = []
+            # outputs = []
+            # completion_tokens = 0
+            # prompt_tokens = 0
+            # MAX_TRIES = 3
+            # progress_bar = tqdm(total=len(snippet_list), desc="Processing Prompts", unit="prompt")
+            # for snippet in snippet_list:
+            #     for tries in range(MAX_TRIES):
+            #         try:
+            #             if self.client is None:
+            #                 raise Exception("Client not initialized")
+            #             response = self.client.chat.completions.create(
+            #                 model=self.model_name.split("::")[-1],
+            #                 messages=[
+            #                     {"role": "user", "content": get_veriscore_extractor_prompt_gpt(snippet["snippet"], snippet["sentence"])}
+            #                 ],
+            #                 max_tokens=512,
+            #                 temperature=0
+            #             )
+            #             outputs.append(response)
+            #             if response.usage is not None:
+            #                 completion_tokens += response.usage.completion_tokens
+            #                 prompt_tokens += response.usage.prompt_tokens
+            #             progress_bar.update(1)
+            #             progress_bar.set_postfix({
+            #                 "Completion Tokens": completion_tokens,
+            #                 "Prompt Tokens": prompt_tokens,
+            #             })
+            #             break
+            #         except Exception as e:
+            #             print(f"Error: {e}. Retrying {tries + 1}/{MAX_TRIES}...")
+            #     else:
+            #         print(f"Failed to generate response for prompt: {snippet['sentence']} after {MAX_TRIES} tries.")
+            #         outputs.append(None)
 
-            for i, output in enumerate(outputs):
-                if output is None:
+            # for i, output in enumerate(outputs):
+            #     if output is None:
+            #         results.append({"claims": []})
+            #         continue
+            #     response = output.choices[0].message.content
+            #     clean_output = response.strip()
+            #     if not clean_output or "No verifiable claim." in clean_output:
+            #         results.append({"claims": []})
+            #     else:
+            #         claims = [x.strip() for x in clean_output.split("\n") if len(x.split()) > 1]    # at least two words
+            #         results.append({"claims": claims})
+
+            messages_list = [[{"role": "user", "content": get_veriscore_extractor_prompt_gpt(snippet["snippet"], snippet["sentence"])}] for snippet in snippet_list]
+            outputs = batch_chat_complete(
+                self.client,
+                messages_list,
+                model=self.model_name.split("::")[-1],
+                max_tokens=512,
+                temperature=0
+            )
+            results = []
+            for output in outputs:
+                try:
+                    clean_output = output.choices[0].message.content
+                    if not clean_output or "No verifiable claim." in clean_output:
+                        results.append({"claims": []})
+                    else:
+                        claims = [x.strip() for x in clean_output.split("\n") if len(x.split()) > 1]    # at least two words
+                        results.append({"claims": claims})
+                    self.prompt_tokens += output.usage.prompt_tokens
+                    self.completion_tokens += output.usage.completion_tokens
+                except Exception as e:
+                    print(f"Error: {e}")
                     results.append({"claims": []})
-                    continue
-                response = output.choices[0].message.content
-                clean_output = response.strip()
-                if not clean_output or "No verifiable claim." in clean_output:
-                    results.append({"claims": []})
-                else:
-                    claims = [x.strip() for x in clean_output.split("\n") if len(x.split()) > 1]    # at least two words
-                    results.append({"claims": claims})
 
         if self.lazy_loading:
             self.unload_model()

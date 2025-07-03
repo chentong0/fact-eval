@@ -80,17 +80,26 @@ class VeriScorer:
         
         self.claim_verifier = ClaimVerifier(model_name=config.model_name_verification)
 
-    def _extract_claims(self, data: List[Dict[str, Any]], save_tag: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+    def _extract_claims(self, data: List[Dict[str, Any]], model_alias: str) -> Tuple[List[Dict[str, Any]], List[str]]:
         """
         Extract claims from model responses.
         
         Args:
             data: List of data items containing model responses
-            save_tag: Tag for saving intermediate results
+            model_alias: Tag for saving intermediate results
             
         Returns:
             Tuple of (processed_data, extracted_claims)
         """
+        # if the save file exists, load it
+        if self.cache_dir is not None:
+            output_file = f"results/claims_{model_alias}.jsonl"
+            if os.path.exists(os.path.join(self.cache_dir, output_file)):
+                with open(os.path.join(self.cache_dir, output_file), "r") as f:
+                    data = [json.loads(line) for line in f]
+                    extracted_claims = [item["claim_list"] for item in data]
+                return data, extracted_claims
+
         extracted_claims = []
         extraction_results = self.claim_extractor.batch_scanner_extractor(data)
 
@@ -105,7 +114,7 @@ class VeriScorer:
         
         # Save intermediate results
         if self.cache_dir is not None:
-            output_file = f"results/claims_{save_tag}.jsonl"
+            output_file = f"results/claims_{model_alias}.jsonl"
             output_path = os.path.join(self.cache_dir, output_file)
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, "w") as f:
@@ -115,22 +124,31 @@ class VeriScorer:
 
         return data, extracted_claims
 
-    def _search_evidence(self, extracted_claims: List[str], save_tag: str) -> Dict[str, List[Dict[str, str]]]:
+    def _search_evidence(self, extracted_claims: List[str], model_alias: str) -> Dict[str, List[Dict[str, str]]]:
         """
         Search for evidence to support the extracted claims.
         
         Args:
             extracted_claims: List of claims to search evidence for
-            save_tag: Tag for saving intermediate results
+            model_alias: Tag for saving intermediate results
             
         Returns:
             Dictionary mapping claims to search results
         """
+
+        # if the save file exists, load it
+        if self.cache_dir is not None:
+            output_file = f"results/evidence_{model_alias}.json"
+            if os.path.exists(os.path.join(self.cache_dir, output_file)):
+                with open(os.path.join(self.cache_dir, output_file), "r") as f:
+                    claim_search_results = json.load(f)
+                return claim_search_results
+
         claim_search_results = self.fetch_search.get_snippets(extracted_claims)
 
         # Save search results
         if self.cache_dir is not None:
-            output_file = f"results/evidence_{save_tag}.json"
+            output_file = f"results/evidence_{model_alias}.json"
             output_path = os.path.join(self.cache_dir, output_file)
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, "w") as f:
@@ -138,24 +156,33 @@ class VeriScorer:
 
         return claim_search_results
 
-    def _verify_claims(self, claim_search_results: Dict[str, List[Dict[str, str]]], save_tag: str) -> Dict[str, bool]:
+    def _verify_claims(self, claim_search_results: Dict[str, List[Dict[str, str]]], model_alias: str) -> Dict[str, bool]:
         """
         Verify claims against the search results.
         
         Args:
             claim_search_results: Dictionary mapping claims to search results
-            save_tag: Tag for saving intermediate results
+            model_alias: Tag for saving intermediate results
             
         Returns:
             Dictionary mapping claims to verification results (True/False)
         """
+
+        # if the save file exists, load it
+        if self.cache_dir is not None:
+            output_file = f"results/verification_{model_alias}.json"
+            if os.path.exists(os.path.join(self.cache_dir, output_file)):
+                with open(os.path.join(self.cache_dir, output_file), "r") as f:
+                    verification_results = json.load(f)
+                return verification_results
+        
         verification_results = self.claim_verifier.batch_verifying_claim(
             claim_search_results, search_res_num=self.search_res_num
         )
         
         # Save verification results
         if self.cache_dir is not None:
-            output_file = f'results/verification_{save_tag}.json'
+            output_file = f'results/verification_{model_alias}.json'
             output_path = os.path.join(self.cache_dir, output_file)
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             with open(output_path, "w") as f:
@@ -212,13 +239,13 @@ class VeriScorer:
 
         return aggregate_metrics, per_instance_results
 
-    def get_score(self, data: List[Dict[str, Any]], save_tag: str = 'default') -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def get_score(self, data: List[Dict[str, Any]], model_alias: str = 'default') -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
         Compute VeriScore for the given data.
         
         Args:
             data: List of data items containing model responses
-            save_tag: Tag for saving intermediate and final results
+            model_alias: Tag for saving intermediate and final results
             
         Returns:
             Tuple of (aggregate_metrics, per_instance_results)
@@ -226,17 +253,17 @@ class VeriScorer:
         if not data:
             raise ValueError("Data list cannot be empty")
             
-        if not save_tag:
-            raise ValueError("save_tag cannot be empty")
+        if not model_alias:
+            raise ValueError("model_alias cannot be empty")
 
         # Step 1: Extract claims
-        data, extracted_claims = self._extract_claims(data, save_tag)
+        data, extracted_claims = self._extract_claims(data, model_alias)
 
         # Step 2: Search for evidence
-        claim_search_results = self._search_evidence(extracted_claims, save_tag)
+        claim_search_results = self._search_evidence(extracted_claims, model_alias)
 
         # Step 3: Verify claims
-        verification_results = self._verify_claims(claim_search_results, save_tag)
+        verification_results = self._verify_claims(claim_search_results, model_alias)
 
         # Step 4: Compute metrics
         aggregate_metrics, per_instance_results = self._compute_metrics(data, verification_results)
@@ -244,10 +271,23 @@ class VeriScorer:
         # # Save final results
         # if self.output_dir is not None:
         #     output_dir = os.path.join(self.output_dir, 'results')
-        #     output_path = os.path.join(output_dir, f"results_{save_tag}.json")
+        #     output_path = os.path.join(output_dir, f"results_{model_alias}.json")
         #     os.makedirs(os.path.dirname(output_path), exist_ok=True)
         #     with open(output_path, "w") as f:
         #         json.dump(aggregate_metrics, f, indent=2)
         
+        if self.cache_dir is not None:
+            # save token usage
+            with open(os.path.join(self.cache_dir, f"token_usage.json"), "w") as f:
+                json.dump({
+                    "extraction": {
+                        "prompt_tokens": self.claim_extractor.prompt_tokens,
+                        "completion_tokens": self.claim_extractor.completion_tokens,
+                    },
+                    "verification": {
+                        "prompt_tokens": self.claim_verifier.prompt_tokens,
+                        "completion_tokens": self.claim_verifier.completion_tokens,
+                    }
+                }, f, indent=2)
+                
         return aggregate_metrics, per_instance_results
-

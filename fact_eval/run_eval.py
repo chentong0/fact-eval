@@ -47,17 +47,21 @@ def main():
     """Main function to run factuality evaluation."""
     parser = argparse.ArgumentParser(description="Compute factuality scores for model responses")
     parser.add_argument("--config", type=str, required=True, help="Config file path")
+    parser.add_argument("--config_kwargs", type=str, help="Config kwargs")
+
+    parser.add_argument("--scorer", type=str, help="Scoring method to use")
     parser.add_argument("--data_name", type=str, help="Huggingface dataset name")
     parser.add_argument("--data_split", type=str, help="Data split for Huggingface dataset")
     parser.add_argument("--data_path", type=str, help="Data file path (json/jsonl)")
+    parser.add_argument("--max_samples", type=int, help="Max samples to evaluate")
+
     parser.add_argument("--model_name_or_path", type=str, help="Model name or path")
+    parser.add_argument("--model_alias", type=str, help="Tag for saving intermediate/final results")
     parser.add_argument("--response_path", type=str, help="Response file path")
-    parser.add_argument("--model_tag", type=str, default="default", help="Tag for saving intermediate/final results")
+    
     parser.add_argument("--output_dir", type=str, required=True, help="Output directory")
     parser.add_argument("--cache_dir", type=str, help="Output directory")
     parser.add_argument("--use_cache", action="store_true", help="Use cache")
-    parser.add_argument("--max_samples", type=int, help="Max samples to evaluate")
-    parser.add_argument("--scorer", type=str, help="Scoring method to use")
 
     parser_args = parser.parse_args()
     if parser_args.cache_dir is None:
@@ -66,17 +70,24 @@ def main():
     # Load config and merge with CLI args
     with open(parser_args.config, "r") as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
-    # Merge config and CLI args, CLI args take precedence
-    args = {**config, **{k: v for k, v in vars(parser_args).items() if v is not None}}
+    
+    if parser_args.config_kwargs is not None:
+        config_kwargs = json.loads(parser_args.config_kwargs)
+    else:
+        config_kwargs = {}
+    
+    args = {**config, **config_kwargs}
+    args.update({k: v for k, v in vars(parser_args).items() if v is not None or args.get(k) is None})
     args = argparse.Namespace(**args)
 
+
     # Data loading
-    if "data_name" in args and args.data_name:
+    if args.data_name:
         import datasets
         data_raw = datasets.load_dataset(args.data_name, split=args.data_split, streaming=True)
         data = [dict(item) for item in data_raw]
         print(f"Loaded {len(data)} samples from {args.data_name} {args.data_split}")
-    elif "data_path" in args and args.data_path:
+    elif args.data_path:
         # Accept comma-separated paths or a single path
         if "," in args.data_path:
             paths = [p.strip() for p in args.data_path.split(",")]
@@ -95,9 +106,12 @@ def main():
         if "ground_truth" in item:
             item["docs"] = item["ground_truth"]
             del item["ground_truth"]
+        if "question" in item:
+            item["prompt"] = item["question"]
+            del item["question"]
 
     # Attach responses if provided
-    if "response_path" in args and args.response_path:
+    if args.response_path:
         if "," in args.response_path:
             resp_paths = [p.strip() for p in args.response_path.split(",")]
         else:
@@ -114,14 +128,15 @@ def main():
         for item in data:
             if "prompt" in item and item["prompt"] in prompt_to_response:
                 item["response"] = prompt_to_response[item["prompt"]]
-                item["model"] = args.model_tag
+                item["model"] = args.model_name_or_path
+                item["model_alias"] = args.model_alias
             else:
                 raise ValueError(f"Prompt not found in response file for: {item.get('prompt', '<no prompt>')}")
     else:
         # If no response_path, generate responses (OpenAI/vLLM)
         if not args.model_name_or_path:
             raise ValueError("--model_name_or_path must be provided if --response_path is not used.")
-        if args.model_name_or_path.startswith("openai"):
+        if args.model_name_or_path.startswith("openai::"):
             from fact_eval.utils.async_completion import batch_chat_complete
             from openai import OpenAI
             client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -147,7 +162,8 @@ def main():
             torch.cuda.empty_cache()
         for item, response in zip(data, response_list):
             item["response"] = response
-            item["model"] = args.model_tag
+            item["model"] = args.model_name_or_path
+            item["model_alias"] = args.model_alias
         response_file = os.path.join(args.output_dir, "response.jsonl")
         os.makedirs(args.output_dir, exist_ok=True)
         with open(response_file, "w") as f:
@@ -159,12 +175,12 @@ def main():
         from fact_eval.scorer.veriscore import VeriScoreConfig, VeriScorer
         scorer_config = VeriScoreConfig(**{k: v for k, v in vars(args).items() if k in VeriScoreConfig.__dataclass_fields__})
         scorer = VeriScorer(scorer_config)
-        aggregate_metrics, per_instance_results = scorer.get_score(data, save_tag=args.model_tag)
+        aggregate_metrics, per_instance_results = scorer.get_score(data, model_alias=args.model_alias)
     elif args.scorer == "factscore":
         from fact_eval.scorer.factscore import FactScoreConfig, FactScorer
         scorer_config = FactScoreConfig(**{k: v for k, v in vars(args).items() if k in FactScoreConfig.__dataclass_fields__})
         scorer = FactScorer(scorer_config)
-        aggregate_metrics, per_instance_results = scorer.get_score(data, save_tag=args.model_tag)
+        aggregate_metrics, per_instance_results = scorer.get_score(data, model_alias=args.model_alias)
     else:
         raise ValueError(f"Invalid scorer: {args.scorer}")
 
