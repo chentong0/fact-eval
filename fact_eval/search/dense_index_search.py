@@ -100,10 +100,16 @@ class FAVALocalSearchAPI():
         no_fp16=False,
         question_maxlength=512,
         save_or_load_index=True,
-        indexing_batch_size=1000000,
+        indexing_batch_size=2555904,
         projection_size=768,
-        n_subquantizers=0,
-        n_bits=8,
+        # n_subquantizers=0,
+        # n_bits=8,
+        n_list=None,
+        m_hnsw=None,
+        m_pq=None,
+        # n_list=65536,
+        # m_hnsw=32,
+        # m_pq=32,
         device='cpu',
     ):
         self.passages_path = passages_path
@@ -115,8 +121,11 @@ class FAVALocalSearchAPI():
         self.save_or_load_index = save_or_load_index
         self.indexing_batch_size = indexing_batch_size
         self.projection_size = projection_size
-        self.n_subquantizers = n_subquantizers
-        self.n_bits = n_bits
+        # self.n_subquantizers = n_subquantizers
+        # self.n_bits = n_bits
+        self.n_list = n_list
+        self.m_hnsw = m_hnsw
+        self.m_pq = m_pq
         self.device = device
 
         self._load_encoder()
@@ -164,7 +173,7 @@ class FAVALocalSearchAPI():
 
             print("Data indexing completed.")
 
-        self.index = FAVAIndexer(self.projection_size, self.n_subquantizers, self.n_bits)
+        self.index = FAVAIndexer(self.projection_size, self.n_list, self.m_hnsw, self.m_pq)
 
         if self.device == 'cuda':
             raise NotImplementedError("GPU is not supported for local search")
@@ -305,11 +314,23 @@ class FAVAContriever(BertModel):
 
 class FAVAIndexer(object):
 
-    def __init__(self, vector_sz, n_subquantizers=0, n_bits=8):
-        if n_subquantizers > 0:
-            self.index = faiss.IndexPQ(vector_sz, n_subquantizers, n_bits, faiss.METRIC_INNER_PRODUCT)
+    def __init__(self, vector_sz, nlist=None, m_hnsw=None, m_pq=None):
+        # if n_subquantizers > 0:
+        #     self.index = faiss.IndexPQ(vector_sz, n_subquantizers, n_bits, faiss.METRIC_INNER_PRODUCT)
+        # else:
+        #     self.index = faiss.IndexFlatIP(vector_sz)
+
+        # nlist = 65536      # IVF clusters (IVF65536)
+        # M_hnsw = 32        # Number of links for HNSW coarse quantizer
+        # M_pq = 32          # Number of PQ segments (PQ32)
+
+        # index = faiss.index_factory(d, "IVF65536_HNSW32,PQ32")
+        if nlist is not None and m_hnsw is not None and m_pq is not None:
+            self.index = faiss.index_factory(vector_sz, f"IVF{nlist}_HNSW{m_hnsw},PQ{m_pq}")
         else:
-            self.index = faiss.IndexFlatIP(vector_sz)
+            assert nlist is None and m_hnsw is None and m_pq is None, "nlist, m_hnsw, and m_pq must be None if not all are provided"
+            self.index = faiss.index_factory(vector_sz, "Flat")
+
         #self.index_id_to_db_id = np.empty((0), dtype=np.int64)
         self.index_id_to_db_id = []
 
@@ -346,7 +367,9 @@ class FAVAIndexer(object):
         self._update_id_mapping(ids)
         embeddings = embeddings.astype('float32')
         if not self.index.is_trained:
+            print(f"Training index with {len(embeddings)} embeddings")
             self.index.train(embeddings)
+            print(f"Index trained with {len(embeddings)} embeddings")
         self.index.add(embeddings)
 
         print(f'Total data indexed {len(self.index_id_to_db_id)}')
@@ -367,7 +390,7 @@ class FAVAIndexer(object):
 
     def serialize(self, dir_path):
         index_file = os.path.join(dir_path, 'index.faiss')
-        meta_file = os.path.join(dir_path, 'index_meta.faiss')
+        meta_file = os.path.join(dir_path, 'passage_pos_id_map.pkl')
         print(f'Serializing index to {index_file}, meta data to {meta_file}')
 
         faiss.write_index(self.index, index_file)
@@ -376,7 +399,7 @@ class FAVAIndexer(object):
 
     def deserialize_from(self, dir_path):
         index_file = os.path.join(dir_path, 'index.faiss')
-        meta_file = os.path.join(dir_path, 'index_meta.faiss')
+        meta_file = os.path.join(dir_path, 'passage_pos_id_map.pkl')
         print(f'Loading index from {index_file}, meta data from {meta_file}')
 
         self.index = faiss.read_index(index_file)

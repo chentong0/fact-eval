@@ -10,20 +10,18 @@ class ClaimVerifier:
         raise NotImplementedError
 
 class OpenaiClaimVerifier:
-    def __init__(self, model_name):
+    def __init__(self, model_name, batch_size=256):
         self.model_name = model_name
-        if self.model_name.startswith("azure::"):
-            from openai import AzureOpenAI
-            self.client = AzureOpenAI(
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
-                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
-                api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-            )
-        elif self.model_name.startswith("openai::"):
-            from openai import OpenAI
-            self.client = OpenAI(
-                api_key=os.getenv("OPENAI_API_KEY", ""),
-            )
+        self.batch_size = batch_size
+        
+        # must be one of "openai::", "vllm-openai::", "azure::
+        assert self.model_name.startswith("openai::") or self.model_name.startswith("vllm-openai::") or self.model_name.startswith("azure::")
+        from fact_eval.utils.load_model import load_model
+        model_info = load_model(self.model_name)
+        self.client = model_info["client"]
+        self.tokenizer = model_info["tokenizer"]
+        self.llm = model_info["llm"]
+
         # self.token_usage = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
@@ -38,11 +36,15 @@ class OpenaiClaimVerifier:
             for claim, passages in zip(claim_list, passages_list)
         ]
         messages_list = [[{"role": "user", "content": prompt}] for prompt in task_prompt_list]
+        chat_completion_kwargs = {}
+        if self.model_name.startswith("vllm-openai::"):
+            chat_completion_kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
         outputs = batch_chat_complete(
             self.client,
-            messages_list,
+            messages_list, batch_size=self.batch_size,
             model=self.model_name.split("::")[-1],
             max_tokens=10,
+            **chat_completion_kwargs
         )
         # return [result.choices[0].text for result in results]
         # inconclusive and contradicted -> false, supported -> true

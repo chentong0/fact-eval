@@ -32,34 +32,11 @@ class ClaimExtractor():
             self.load_model()
 
     def load_model(self):
-        if self.model_name.startswith("azure::"):
-            from openai import AzureOpenAI
-            self.client = AzureOpenAI(
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
-                azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
-                api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-            )
-        if self.model_name.startswith("openai::"):
-            from openai import OpenAI
-            self.client = OpenAI(
-                api_key=os.getenv("OPENAI_API_KEY", ""),
-            )
-        else:
-            # get the available gpu memory, and the model should take 20gb
-            total_memory = torch.cuda.get_device_properties(0).total_memory
-            available_memory = total_memory - torch.cuda.memory_allocated()
-            # Calculate memory utilization based on available memory vs desired 20GB
-            desired_memory = 20 * 1024 * 1024 * 1024  # 20GB in bytes
-            gpu_memory_utilization = min(1.0, desired_memory / total_memory)
-
-            self.llm = LLM(
-                model=self.model_name, 
-                dtype="bfloat16",
-                tensor_parallel_size=1,
-                gpu_memory_utilization=gpu_memory_utilization,
-                max_model_len=4096,
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        from fact_eval.utils.load_model import load_model
+        model_info = load_model(self.model_name)
+        self.client = model_info["client"]
+        self.tokenizer = model_info["tokenizer"]
+        self.llm = model_info["llm"]
 
     def unload_model(self):
         if self.llm:

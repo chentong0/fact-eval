@@ -25,12 +25,14 @@ class FactScoreConfig:
     model_name_extraction: Optional[str] = None
     model_name_verification: Optional[str] = None
     search_model_name: str = "bm25-only"
+    search_tokenizer_name: Optional[str] = None
     search_chunk_size: int = 100
     search_num_chunks: int = 10
     search_num_processes: int = 1
     cache_dir: Optional[str] = None
     length_penalty_threshold: int = 10
     # output_dir: Optional[str] = None
+    batch_size: int = 256
 
 
 class FactScorer:
@@ -57,13 +59,14 @@ class FactScorer:
             os.makedirs(self.cache_dir, exist_ok=True)
 
 
-        self.claim_extractor = OpenaiClaimExtractor(model_name=config.model_name_extraction)
+        self.claim_extractor = OpenaiClaimExtractor(model_name=config.model_name_extraction, batch_size=config.batch_size)
         
         self.search_engine = SearchEngineDocumentCollection(
-            chunk_size=config.search_chunk_size
+            chunk_size=config.search_chunk_size,
+            tokenizer_name=config.search_tokenizer_name
         )
         
-        self.claim_verifier = OpenaiClaimVerifier(model_name=config.model_name_verification)
+        self.claim_verifier = OpenaiClaimVerifier(model_name=config.model_name_verification, batch_size=config.batch_size)
 
     def _extract_claims(self, data: List[Dict[str, Any]], model_alias: str) -> Tuple[List[Dict[str, Any]], List[List[str]]]:
         """
@@ -218,10 +221,12 @@ class FactScorer:
             num_claims = len(claim_list)
             if len(claim_list) > 0:
                 factuality_score = correct_claims / len(claim_list)
+                factuality_score_strict = float(correct_claims == len(claim_list))
                 penalty = 1.0 if len(claim_list) > self.config.length_penalty_threshold else np.exp(1 - self.config.length_penalty_threshold / len(claim_list))
                 factuality_score_with_length_penalty = factuality_score * penalty
             else:
                 factuality_score = None
+                factuality_score_strict = None
                 penalty = 0.0
                 factuality_score_with_length_penalty = 0.0
 
@@ -229,6 +234,7 @@ class FactScorer:
                 **{k: v for k, v in dict_item.items() if k not in ["docs"]},
                 "factuality_score": factuality_score,
                 "factuality_score_with_length_penalty": factuality_score_with_length_penalty,
+                "factuality_score_strict": factuality_score_strict,
                 "num_correct_claims": correct_claims,
                 "num_claims": num_claims,
             })
@@ -253,13 +259,24 @@ class FactScorer:
 
         results = {}
         for key, subset in domain_to_subset.items():
-            results[key] = {
-                "factuality_score": np.mean([item.get("factuality_score") for item in subset if item.get("factuality_score") is not None]),
-                "factuality_score_with_length_penalty": np.mean([item.get("factuality_score_with_length_penalty") for item in subset]),
-                "num_correct_claims": np.mean([item.get("num_correct_claims") for item in subset]),
-                "num_claims": np.mean([item.get("num_claims") for item in subset]),
-                "abstain_ratio": np.mean([1 if item.get("factuality_score") is None else 0 for item in subset]),
-            }
+            if any(item.get("factuality_score") is not None for item in subset):
+                results[key] = {
+                    "factuality_score": np.mean([item.get("factuality_score") for item in subset if item.get("factuality_score") is not None]),
+                    "factuality_score_with_length_penalty": np.mean([item.get("factuality_score_with_length_penalty") for item in subset]),
+                    "factuality_score_strict": np.mean([item.get("factuality_score_strict") for item in subset if item.get("factuality_score_strict") is not None]),
+                    "num_correct_claims": np.mean([item.get("num_correct_claims") for item in subset]),
+                    "num_claims": np.mean([item.get("num_claims") for item in subset]),
+                    "abstain_ratio": np.mean([1 if item.get("factuality_score") is None else 0 for item in subset]),
+                }
+            else:
+                results[key] = {
+                    "factuality_score": None,
+                    "factuality_score_with_length_penalty": None,
+                    "factuality_score_strict": None,
+                    "num_correct_claims": None,
+                    "num_claims": None,
+                    "abstain_ratio": None,
+                }
         return results
 
 
@@ -313,9 +330,9 @@ class FactScorer:
         docs_list = [item.get("docs", []) for item in data]
         if not any(docs_list):
             raise ValueError("docs_list is required for all data items")
-        if not all(item.get("prompt", None) for item in data):
+        if not all(isinstance(item.get("prompt", None), str) for item in data):
             raise ValueError("prompt is required for all data items")
-        if not all(item.get("response", None) for item in data):
+        if not all(isinstance(item.get("response", None), str) for item in data):
             raise ValueError("response is required for all data items")
 
         # Step 1: Extract claims

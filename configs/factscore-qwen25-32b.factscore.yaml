@@ -1,11 +1,12 @@
 scorer: factscore
 data_name: tongc-allenai/fact-eval-data
-data_split: wild_hallucinations
-model_name_extraction: openai::gpt-4.1-nano
-model_name_verification: openai::gpt-4.1-nano
+data_split: factscore
+model_name_extraction: vllm-openai::Qwen/Qwen2.5-7B-Instruct
+model_name_verification: vllm-openai::Qwen/Qwen2.5-7B-Instruct
 search_model_name: bm25-only
 search_chunk_size: 100
 search_num_chunks: 10
 search_num_processes: 1
 length_penalty_threshold: 10
-max_samples: 500
+max_samples: 100
+batch_size: 256

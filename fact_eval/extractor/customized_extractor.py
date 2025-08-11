@@ -25,20 +25,18 @@ class ClaimExtractor:
 
 class OpenaiClaimExtractor:
 
-    def __init__(self, model_name):
+    def __init__(self, model_name, batch_size=256):
         self.model_name = model_name
-        if self.model_name.startswith("azure::"):
-            from openai import AzureOpenAI
-            self.client = AzureOpenAI(
-                api_version=os.getenv("AZURE_OPENAI_API_VERSION", ""),
-                    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
-                    api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
-                )
-        elif self.model_name.startswith("openai::"):
-            from openai import OpenAI
-            self.client = OpenAI(
-                api_key=os.getenv("OPENAI_API_KEY", ""),
-            )
+        self.batch_size = batch_size
+
+        # must be one of "openai::", "vllm-openai::", "azure::
+        assert self.model_name.startswith("openai::") or self.model_name.startswith("vllm-openai::") or self.model_name.startswith("azure::")
+        from fact_eval.utils.load_model import load_model
+        model_info = load_model(self.model_name)
+        self.client = model_info["client"]
+        self.tokenizer = model_info["tokenizer"]
+        self.llm = model_info["llm"]
+
         # self.token_usage = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
@@ -50,23 +48,44 @@ class OpenaiClaimExtractor:
     def extract(self, prompt_list, response_list):
         task_prompt_list = [self.get_prompt(prompt, response) for prompt, response in zip(prompt_list, response_list)]
         messages_list = [[{"role": "user", "content": prompt}] for prompt in task_prompt_list]
+        print(self.model_name)
+        chat_completion_kwargs = {}
+        decoding_kwargs = {"temperature": 0.0}
+        if self.model_name.startswith("vllm-openai::"):
+            # chat_completion_kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}, "guided_json": {"type": "array","items": {"type": "string"}}}
+            chat_completion_kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+            # decoding_kwargs = {"temperature": 0.6, "top_p": 0.95, "presence_penalty": 0.2}
         outputs = batch_chat_complete(
             self.client,
-            messages_list,
+            messages_list, batch_size=self.batch_size,
             model=self.model_name.split("::")[-1],
             max_tokens=4096,
-            temperature=0,
+            **decoding_kwargs,
+            **chat_completion_kwargs
         )
         results = []
+        import re
         for output in outputs:
             try:
                 output_text = output.choices[0].message.content
+                # Use regex to extract JSON from code block, handling optional 'json' and whitespace
+                code_block_match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", output_text, re.IGNORECASE)
+                if code_block_match:
+                    output_text = code_block_match.group(1).strip()
                 claim_list = json.loads(output_text)
+                # if claim_list is not a list of strings, print the output_text
+                if not isinstance(claim_list, list) or not all(isinstance(item, str) for item in claim_list):
+                    # print(output_text)
+                    # import pdb; pdb.set_trace()
+                    # log a warning and use an empty list
+                    print(f"Warning: Extracted claim list is not a list of strings: {output.choices[0].message.content}")
+                    claim_list = []
                 # Sum up token usage from all outputs
                 self.prompt_tokens += output.usage.prompt_tokens
                 self.completion_tokens += output.usage.completion_tokens
                 results.append(claim_list)
             except:
+                print(f"Error: {output.choices[0].message.content}")
                 results.append([])
             
         return results

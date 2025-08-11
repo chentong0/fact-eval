@@ -13,14 +13,32 @@ class SearchEngine:
 
 
 class SearchEngineDocumentCollection:
-    def __init__(self, chunk_size=100):
+    def __init__(self, chunk_size=100, tokenizer_name=None, tokenizer_max_length=131072):
         self.embed_cache = {}
         self.add_n_embed = 0
         self.chunk_size = chunk_size
+
+        if tokenizer_name is not None:
+            from transformers import AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+            self.tokenizer_max_length = tokenizer_max_length
+        else:
+            self.tokenizer = None
+            self.tokenizer_max_length = None
+
+    def tokenizer_encode(self, text) -> List[int | str]:
+        if self.tokenizer is None:
+            return text.split()
+        return self.tokenizer.encode(text, max_length=self.tokenizer_max_length, truncation=True)
     
-    @staticmethod
-    def get_document_chunks(documents, chunk_size=100):
+    def tokenizer_decode(self, tokens) -> str:
+        if self.tokenizer is None:
+            return " ".join(tokens)
+        return self.tokenizer.decode(tokens)
+    
+    def get_document_chunks(self, documents, chunk_size=100) -> Tuple[List[str], List[List[int | str]]]:
         document_chunks = []
+        document_chunks_of_tokens = []
         for doc in documents:
             # Handle both string documents and dict documents with title/text
             if isinstance(doc, dict):
@@ -33,10 +51,15 @@ class SearchEngineDocumentCollection:
                 # Fallback for string documents
                 full_text = str(doc)
             
-            word_list = full_text.split()
-            chunks = [" ".join(word_list[i:i + chunk_size]) for i in range(0, len(word_list), chunk_size)]
+            tokenized_text = self.tokenizer_encode(full_text)
+            chunks_of_tokens = [tokenized_text[i:i + chunk_size] for i in range(0, len(tokenized_text), chunk_size)]
+            chunks = [self.tokenizer_decode(chunk) for chunk in chunks_of_tokens]
             document_chunks.extend(chunks)
-        return tuple(document_chunks)
+            document_chunks_of_tokens.extend(chunks_of_tokens)
+            # word_list = full_text.split()
+            # chunks = [" ".join(word_list[i:i + chunk_size]) for i in range(0, len(word_list), chunk_size)]
+            # document_chunks.extend(chunks)
+        return tuple(document_chunks), tuple(document_chunks_of_tokens)
 
     def get_bm25_passages(self, documents, query, k):
         if len(documents) == 0:
@@ -46,11 +69,12 @@ class SearchEngineDocumentCollection:
         if doc_cache_key in self.embed_cache:
             document_chunks, bm25 = self.embed_cache[doc_cache_key]
         else:
-            document_chunks = self.get_document_chunks(documents, chunk_size=self.chunk_size)
-            bm25 = BM25Okapi([chunk.split() for chunk in document_chunks])
+            document_chunks, document_chunks_of_tokens = self.get_document_chunks(documents, chunk_size=self.chunk_size)
+            bm25 = BM25Okapi(document_chunks_of_tokens)
             self.embed_cache[doc_cache_key] = (document_chunks, bm25)
             self.add_n_embed += 1
-        scores = bm25.get_scores(query.split())
+        tokenized_query = self.tokenizer_encode(query)
+        scores = bm25.get_scores(tokenized_query)
         indices = np.argsort(-scores)[:k]
         return [document_chunks[i] for i in indices]
 
@@ -97,6 +121,7 @@ class SearchEngineDocumentCollection:
         results = []
         for batch_result in batch_results:
             results.extend(batch_result)
+
         return results
 
 

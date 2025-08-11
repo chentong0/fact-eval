@@ -97,7 +97,10 @@ class VeriScorer:
             if os.path.exists(os.path.join(self.cache_dir, output_file)):
                 with open(os.path.join(self.cache_dir, output_file), "r") as f:
                     data = [json.loads(line) for line in f]
-                    extracted_claims = [item["claim_list"] for item in data]
+                extracted_claims = []
+                for item in data:
+                    all_claims = list(set(sum(item["claim_list"], [])))
+                    extracted_claims.extend(all_claims)
                 return data, extracted_claims
 
         extracted_claims = []

@@ -32,11 +32,13 @@ def batch_chat_complete_process_batch(client, messages_batch, max_retries=5, *ar
     def chat_complete_fn(messages):
         for k in range(max_retries):
             try:
+                time.sleep(0.1)
                 return client.chat.completions.create(
                     messages=messages,
                     *args,
                     **kwargs
                 )
+                # wait for 0.1 seconds
             except Exception as e:
                 if k == max_retries - 1:  # Last attempt
                     raise e

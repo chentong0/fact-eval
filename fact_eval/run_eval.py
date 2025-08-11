@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 import torch
+import re
+
 
 def load_data_from_files(input_paths: List[str]) -> List[Dict[str, Any]]:
     """
@@ -41,6 +43,34 @@ def load_data_from_files(input_paths: List[str]) -> List[Dict[str, Any]]:
             print(f"Error loading file {input_file}: {e}")
             continue
     return data_all
+
+
+def extract_final_answer(prediction: str) -> str:
+    """
+    Extract the substring between <answer> and </answer>.
+    If no match is found, extract the substring after </think>.
+    If neither condition matches, clean the prediction by removing the <|assistant|> tag.
+    If none of the above applies, return the original string.
+
+    Args:
+        prediction (str): The input string.
+
+    Returns:
+        str: The extracted substring or the cleaned/original string.
+    """
+    answer_match = re.search(r"<answer>(.*?)</answer>", prediction, re.DOTALL)
+    if answer_match:
+        return answer_match.group(1).strip()
+
+    think_match = re.search(r"</think>(.*)", prediction, re.DOTALL)
+    if think_match:
+        return think_match.group(1).strip()
+
+    cleaned = re.sub(r"<\|assistant\|>", "", prediction)
+    if cleaned != prediction:
+        return cleaned.strip()
+
+    return prediction
 
 
 def main():
@@ -161,26 +191,33 @@ def main():
             gc.collect()
             torch.cuda.empty_cache()
         for item, response in zip(data, response_list):
-            item["response"] = response
+            item["output"] = response
+            item["response"] = extract_final_answer(response)
             item["model"] = args.model_name_or_path
             item["model_alias"] = args.model_alias
         response_file = os.path.join(args.output_dir, "response.jsonl")
         os.makedirs(args.output_dir, exist_ok=True)
         with open(response_file, "w") as f:
             for item in data:
-                f.write(json.dumps({"prompt": item["prompt"], "response": item["response"], "model": item["model"]}) + "\n")
+                f.write(json.dumps({"prompt": item["prompt"], "response": item["response"], "output": item["output"], "model": item["model"]}) + "\n")
+
+    data_clean = [{
+        "prompt": item["prompt"],
+        "response": item["response"],
+        "docs": item["docs"] if "docs" in item else None,
+    } for item in data]
 
     # Scoring
     if args.scorer == "veriscore":
         from fact_eval.scorer.veriscore import VeriScoreConfig, VeriScorer
         scorer_config = VeriScoreConfig(**{k: v for k, v in vars(args).items() if k in VeriScoreConfig.__dataclass_fields__})
         scorer = VeriScorer(scorer_config)
-        aggregate_metrics, per_instance_results = scorer.get_score(data, model_alias=args.model_alias)
+        aggregate_metrics, per_instance_results = scorer.get_score(data_clean, model_alias=args.model_alias)
     elif args.scorer == "factscore":
         from fact_eval.scorer.factscore import FactScoreConfig, FactScorer
         scorer_config = FactScoreConfig(**{k: v for k, v in vars(args).items() if k in FactScoreConfig.__dataclass_fields__})
         scorer = FactScorer(scorer_config)
-        aggregate_metrics, per_instance_results = scorer.get_score(data, model_alias=args.model_alias)
+        aggregate_metrics, per_instance_results = scorer.get_score(data_clean, model_alias=args.model_alias)
     else:
         raise ValueError(f"Invalid scorer: {args.scorer}")
 

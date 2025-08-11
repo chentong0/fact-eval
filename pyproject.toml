@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 dependencies = [
     "torch>=2.6.0",  # Pinned for vLLM
     "transformers>=4.51.3",  # Pinned for vLLM
-    "vllm==0.8.5",
+    "vllm==0.8.5.post1",
 
     "datasets>=3.6.0",
     "openai>=1.59.6",
