@@ -86,6 +86,7 @@ def main():
     parser.add_argument("--max_samples", type=int, help="Max samples to evaluate")
 
     parser.add_argument("--model_name_or_path", type=str, help="Model name or path")
+    parser.add_argument("--max_new_tokens", type=int, default=512, help="Max tokens for model to generate")
     parser.add_argument("--model_alias", type=str, help="Tag for saving intermediate/final results")
     parser.add_argument("--response_path", type=str, help="Response file path")
     
@@ -110,7 +111,6 @@ def main():
     args.update({k: v for k, v in vars(parser_args).items() if v is not None or args.get(k) is None})
     args = argparse.Namespace(**args)
 
-
     # Data loading
     if args.data_name:
         import datasets
@@ -127,10 +127,6 @@ def main():
         print(f"Loaded {len(data)} samples from {args.data_path}")
     else:
         raise ValueError("Either --data_name or --data_path must be provided.")
-    if args.max_samples:
-        random.seed(42)
-        random_indices = random.sample(range(len(data)), int(args.max_samples))
-        data = [data[i] for i in random_indices]
     # if "ground_truth" in data, change the name to "docs"
     for item in data:
         if "ground_truth" in item:
@@ -139,9 +135,12 @@ def main():
         if "question" in item:
             item["prompt"] = item["question"]
             del item["question"]
-
     # Attach responses if provided
     if args.response_path:
+        # ifgnore args.max_samples
+        if args.max_samples:
+            print(f"Warning: --max_samples is ignored when --response_path is provided")
+        
         if "," in args.response_path:
             resp_paths = [p.strip() for p in args.response_path.split(",")]
         else:
@@ -151,18 +150,19 @@ def main():
             "prompt": item["prompt"] if "prompt" in item else item["input"],    # compatibility with factscore
             "response": item["response"] if "response" in item else item["output"],
         } for item in response_list]
-        # Match responses to data by prompt
-        prompt_to_response = {
-            item["prompt"]: item["response"] for item in response_list
-        }
-        for item in data:
-            if "prompt" in item and item["prompt"] in prompt_to_response:
-                item["response"] = prompt_to_response[item["prompt"]]
-                item["model"] = args.model_name_or_path
-                item["model_alias"] = args.model_alias
-            else:
-                raise ValueError(f"Prompt not found in response file for: {item.get('prompt', '<no prompt>')}")
+        prompt_to_item = {item["prompt"]: item for item in data}
+        data = [{
+            "prompt": item["prompt"],
+            "response": item["response"],
+            "docs": prompt_to_item[item["prompt"]].get("docs", []),
+            "model": args.model_name_or_path,
+            "model_alias": args.model_alias,
+        } for item in response_list]
     else:
+        if args.max_samples:
+            random.seed(42)
+            random_indices = random.sample(range(len(data)), int(args.max_samples))
+            data = [data[i] for i in random_indices]
         # If no response_path, generate responses (OpenAI/vLLM)
         if not args.model_name_or_path:
             raise ValueError("--model_name_or_path must be provided if --response_path is not used.")
@@ -175,7 +175,7 @@ def main():
                 client=client,
                 messages_list=messages_list,
                 model=args.model_name_or_path.split("::")[-1],
-                max_tokens=512,
+                max_tokens=args.max_new_tokens,
             )
             response_list = [output.choices[0].message.content for output in outputs]
         else:

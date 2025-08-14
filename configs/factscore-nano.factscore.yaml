@@ -1,6 +1,6 @@
 scorer: factscore
-data_name: tongc-allenai/fact-eval-data
-data_split: factscore
+data_name: chentong00/fact-eval-data-factscore
+data_split: train
 model_name_extraction: openai::gpt-4.1-nano
 model_name_verification: openai::gpt-4.1-nano
 search_model_name: bm25-only
