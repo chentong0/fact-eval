@@ -1,7 +1,7 @@
 scorer: factscore
 data_name: tongc-allenai/fact-eval-data
 data_split: wild_hallucinations
-model_name_extraction: openai::gpt-4.1-mini
+model_name_extraction: openai::gpt-4.1
 model_name_verification: openai::gpt-4.1-mini
 search_model_name: bm25-only
 search_tokenizer_name: null
